@@ -958,18 +958,325 @@ def find_player_photo(player_id, player_name):
     )
 
 
+# ==========================================
+# DISPLAY PLAYER PHOTO - MULTI PROVIDER
+# ==========================================
 
-# ------------------------------------------
-# DISPLAY PLAYER PHOTO
-# ------------------------------------------
+import unicodedata
+from urllib.parse import quote
+
+PHOTO_UA = {
+    "User-Agent": (
+        "FootballTransferIntelligence/2.5 "
+        "(https://github.com/elissaaaf2473-sudo/"
+        "football-transfer-intelligence)"
+    )
+}
+
+
+def normalized_name(name):
+    name = unicodedata.normalize(
+        "NFKD", str(name)
+    )
+    return "".join(
+        ch for ch in name.lower()
+        if not unicodedata.combining(ch)
+    ).strip()
+
+
+def download_photo(url):
+    if not url or not url.startswith("https://"):
+        return None
+
+    response = requests.get(
+        url,
+        headers=PHOTO_UA,
+        timeout=10
+    )
+    response.raise_for_status()
+
+    kind = response.headers.get(
+        "Content-Type", ""
+    ).lower()
+
+    if not kind.startswith("image/"):
+        return None
+
+    if len(response.content) > 5 * 1024 * 1024:
+        return None
+
+    return response.content
+
+
+# ==========================================
+# SOURCE 1: THESPORTSDB
+# ==========================================
+
+def search_sportsdb(player_id, player_name):
+
+    response = requests.get(
+        "https://www.thesportsdb.com/api/v1/"
+        "json/123/searchplayers.php",
+        params={"p": player_name},
+        headers=PHOTO_UA,
+        timeout=10
+    )
+
+    response.raise_for_status()
+    data = response.json()
+
+    candidates = (
+        data.get("player")
+        or data.get("players")
+        or []
+    )
+
+    target = normalized_name(player_name)
+    target_words = set(target.split())
+
+    for player in candidates:
+
+        sport = str(
+            player.get("strSport", "")
+        ).lower()
+
+        if sport not in ["soccer", "football"]:
+            continue
+
+        found_name = normalized_name(
+            player.get("strPlayer", "")
+        )
+
+        found_words = set(found_name.split())
+
+        # Nama harus sesuai atau memuat
+        # seluruh kata pada nama pencarian.
+        if not (
+            found_name == target
+            or (
+                len(target_words) >= 2
+                and target_words.issubset(found_words)
+            )
+        ):
+            continue
+
+        # Cek identitas tambahan jika tersedia
+        transfermarkt_id = player.get(
+            "idTransferMkt"
+        )
+
+        if (
+            transfermarkt_id
+            and str(transfermarkt_id) != str(player_id)
+        ):
+            continue
+
+        photo_url = (
+            player.get("strThumb")
+            or player.get("strCutout")
+        )
+
+        if not photo_url:
+            continue
+
+        image = download_photo(photo_url)
+
+        if image:
+            return {
+                "image": image,
+                "source": "TheSportsDB",
+                "url": "https://www.thesportsdb.com/",
+                "note": (
+                    "Foto dari database olahraga. "
+                    "Periksa hak penggunaan foto "
+                    "pada sumber aslinya."
+                )
+            }
+
+    return None
+
+
+# ==========================================
+# SOURCE 2: WIKIPEDIA SUMMARY
+# ==========================================
+
+def search_wikipedia(player_name):
+
+    languages = ["en", "de", "es", "fr", "id"]
+
+    for lang in languages:
+
+        title = quote(
+            player_name.replace(" ", "_"),
+            safe=""
+        )
+
+        try:
+            response = requests.get(
+                f"https://{lang}.wikipedia.org/"
+                f"api/rest_v1/page/summary/{title}",
+                headers=PHOTO_UA,
+                timeout=8
+            )
+
+            response.raise_for_status()
+            data = response.json()
+
+            description = (
+                str(data.get("description", ""))
+                + " "
+                + str(data.get("extract", ""))
+            ).lower()
+
+            if not any(
+                word in description
+                for word in [
+                    "football",
+                    "soccer",
+                    "futbol",
+                    "futebol",
+                    "fußball",
+                    "sepak bola"
+                ]
+            ):
+                continue
+
+            photo_url = data.get(
+                "thumbnail", {}
+            ).get("source")
+
+            if not photo_url:
+                continue
+
+            image = download_photo(photo_url)
+
+            if image:
+                article_url = (
+                    data.get("content_urls", {})
+                    .get("desktop", {})
+                    .get("page", "")
+                )
+
+                return {
+                    "image": image,
+                    "source": (
+                        f"Wikipedia ({lang})"
+                    ),
+                    "url": article_url,
+                    "note": (
+                        "Lihat halaman sumber untuk "
+                        "informasi fotografer dan lisensi."
+                    )
+                }
+
+        except (
+            requests.RequestException,
+            ValueError,
+            KeyError
+        ):
+            continue
+
+    return None
+
+
+# ==========================================
+# SOURCE 3: EXISTING WIKIDATA SYSTEM
+# ==========================================
+
+@st.cache_data(
+    ttl=1800,
+    max_entries=500,
+    show_spinner=False
+)
+def fetch_player_picture(player_id, player_name):
+
+    errors = []
+
+    # Provider independen pertama
+    try:
+        photo = search_sportsdb(
+            player_id, player_name
+        )
+
+        if photo:
+            return photo, errors
+
+        errors.append(
+            "TheSportsDB: foto tidak ditemukan"
+        )
+
+    except Exception as exc:
+        errors.append(
+            "TheSportsDB: "
+            + type(exc).__name__
+            + ": " + str(exc)[:120]
+        )
+
+    # Provider kedua
+    try:
+        photo = search_wikipedia(player_name)
+
+        if photo:
+            return photo, errors
+
+        errors.append(
+            "Wikipedia: foto tidak ditemukan"
+        )
+
+    except Exception as exc:
+        errors.append(
+            "Wikipedia: " + type(exc).__name__
+        )
+
+    # Provider ketiga, dari kode lama
+    try:
+        old_photo, reason = find_player_photo(
+            str(player_id),
+            str(player_name)
+        )
+
+        if old_photo:
+            url = old_photo.get("url")
+            picture = download_photo(url)
+
+            if picture:
+                return {
+                    "image": picture,
+                    "source": "Wikimedia Commons",
+                    "url": old_photo.get(
+                        "source", ""
+                    ),
+                    "note": (
+                        str(old_photo.get("artist", ""))
+                        + " · "
+                        + str(old_photo.get("license", ""))
+                    )
+                }, errors
+
+        errors.append(
+            "Wikidata/Commons: "
+            + str(reason)[:120]
+        )
+
+    except Exception as exc:
+        errors.append(
+            "Wikidata/Commons: "
+            + type(exc).__name__
+        )
+
+    return None, errors
+
+
+# ==========================================
+# SHOW PLAYER PROFILE PICTURE
+# ==========================================
 
 def show_player_photo(player_id, player_name):
 
     with st.spinner(
-        "Mencari foto pemain otomatis..."
+        "Mencari foto " + str(player_name) + "..."
     ):
-
-        photo, reason = find_player_photo(
+        photo, errors = fetch_player_picture(
             str(player_id),
             str(player_name)
         )
@@ -977,49 +1284,34 @@ def show_player_photo(player_id, player_name):
     if photo:
 
         st.image(
-            photo["url"],
+            photo["image"],
             width=230
         )
 
         st.caption(
-            "Foto profil · "
-            "Mungkin berasal dari musim berbeda."
+            "Foto profil · " + photo["source"]
         )
 
-        st.caption(
-            f"Kredit: {photo['artist']} "
-            f"· {photo['license']}"
-        )
+        st.caption(photo["note"])
 
-        if photo["source"]:
+        source_url = photo.get("url", "")
 
+        if source_url.startswith("https://"):
             st.markdown(
-                f"[📷 Sumber dan lisensi foto]"
-                f"({photo['source']})"
-            )
-
-        license_url = str(
-            photo.get("license_url", "")
-        )
-
-        if license_url.startswith("https://"):
-
-            st.markdown(
-                f"[Teks lisensi]({license_url})"
+                f"[Lihat sumber foto]({source_url})"
             )
 
     else:
 
         st.info(
-            "👤 Foto terverifikasi "
-            "belum tersedia."
+            "👤 Foto belum dapat ditampilkan."
         )
 
         with st.expander(
-            "Kenapa foto tidak muncul?"
+            "Detail pencarian foto"
         ):
-            st.caption(reason)
-
+            for error in errors:
+                st.write("• " + error)
 
 # ==========================================
 # 05 - PREDICTION HELPERS
