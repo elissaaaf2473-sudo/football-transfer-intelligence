@@ -716,83 +716,247 @@ def commons_photo(filename):
     return None
 
 
+
 # ------------------------------------------
-# SOURCE 5 - AUTOMATIC SEARCH + CACHE
+# SOURCE 5 - INDEPENDENT PHOTO FALLBACK
 # ------------------------------------------
 
-@st.cache_data(
-    ttl=6 * 3600,
-    max_entries=1000,
-    show_spinner=False
-)
-def find_player_photo(player_id, player_name):
+import unicodedata
 
-    try:
 
-        entity = find_person(
-            player_id,
-            player_name
-        )
+def nama_bersih(value):
+    value = unicodedata.normalize(
+        "NFKD", str(value)
+    )
+    value = "".join(
+        c for c in value
+        if not unicodedata.combining(c)
+    )
+    return " ".join(value.casefold().split())
 
-        if entity is None:
-            return (
-                None,
-                "Identitas pemain belum dapat "
-                "dicocokkan melalui ID Transfermarkt."
+
+def foto_dari_wikipedia(player_id, player_name):
+
+    # Wikipedia dicari langsung, tidak
+    # bergantung pada keberhasilan SPARQL.
+    errors = []
+
+    for lang in ["en", "de", "es", "pt", "fr", "id"]:
+
+        try:
+            data = call_api(
+                f"https://{lang}.wikipedia.org/w/api.php",
+                {
+                    "action": "query",
+                    "format": "json",
+                    "formatversion": 2,
+                    "prop": "pageimages|extracts|pageprops",
+                    "piprop": "name",
+                    "pilicense": "free",
+                    "exintro": 1,
+                    "explaintext": 1,
+                    "exsentences": 3,
+                    "redirects": 1,
+                    "titles": player_name
+                }
             )
 
-        # Foto utama Wikidata
-        candidates = [
-            x for x in claim_values(
-                entity, "P18"
+            pages = data.get(
+                "query", {}
+            ).get("pages", [])
+
+        except (
+            requests.RequestException,
+            ValueError
+        ) as error:
+
+            errors.append(
+                f"Wikipedia {lang}: "
+                f"{type(error).__name__}"
             )
-            if isinstance(x, str)
-        ]
+            continue
 
-        # Alternatif Wikipedia
-        wiki_filename = wikipedia_fallback(
-            entity
-        )
+        for page in pages:
 
-        if (
-            wiki_filename
-            and wiki_filename not in candidates
-        ):
-            candidates.append(wiki_filename)
+            if page.get("missing"):
+                continue
 
-        # Periksa metadata dan lisensi
-        for filename in candidates:
+            title = nama_bersih(
+                page.get("title", "")
+            )
+
+            title = title.replace(
+                " (footballer)", ""
+            )
+
+            name = nama_bersih(player_name)
+
+            description = nama_bersih(
+                page.get("extract", "")
+            )
+
+            filename = page.get("pageimage")
+
+            if title != name or not filename:
+                continue
+
+            football_terms = [
+                "football", "soccer",
+                "futbol", "futebol",
+                "fußball", "fussball",
+                "footballeur",
+                "pesepakbola", "sepak bola"
+            ]
+
+            if not any(
+                term in description
+                for term in football_terms
+            ):
+                continue
+
+            # Jika tersedia, cocokkan
+            # ID Transfermarkt di Wikidata.
+            qid = page.get(
+                "pageprops", {}
+            ).get("wikibase_item")
+
+            if qid:
+
+                try:
+                    wd = call_api(
+                        "https://www.wikidata.org/w/api.php",
+                        {
+                            "action": "wbgetentities",
+                            "format": "json",
+                            "ids": qid,
+                            "props": "claims"
+                        }
+                    )
+
+                    entity = wd.get(
+                        "entities", {}
+                    ).get(qid, {})
+
+                    ids = [
+                        str(x)
+                        for x in claim_values(
+                            entity, "P2446"
+                        )
+                    ]
+
+                    # Tolak foto jika ID berbeda.
+                    if (
+                        ids and
+                        str(player_id) not in ids
+                    ):
+                        continue
+
+                except (
+                    requests.RequestException,
+                    ValueError
+                ):
+                    # API Wikidata boleh gagal.
+                    # Nama dan biografi sudah dicek.
+                    pass
 
             try:
-
-                photo = commons_photo(
-                    filename
-                )
+                photo = commons_photo(filename)
 
                 if photo:
                     return photo, ""
 
             except (
                 requests.RequestException,
-                ValueError,
-                KeyError,
-                TypeError
+                ValueError
+            ) as error:
+
+                errors.append(
+                    "Wikimedia Commons: "
+                    + type(error).__name__
+                )
+
+    return None, " | ".join(
+        dict.fromkeys(errors)
+    )
+
+
+@st.cache_data(
+    ttl=300,
+    max_entries=500,
+    show_spinner=False
+)
+def find_player_photo(player_id, player_name):
+
+    # PRIORITAS 1:
+    # Cari Wikipedia secara independen.
+    photo, reason = foto_dari_wikipedia(
+        player_id,
+        player_name
+    )
+
+    if photo:
+        return photo, ""
+
+    # PRIORITAS 2:
+    # Cari melalui ID Transfermarkt.
+    try:
+        entity = find_person(
+            player_id,
+            player_name
+        )
+
+        if entity:
+
+            candidates = [
+                x for x in claim_values(
+                    entity, "P18"
+                )
+                if isinstance(x, str)
+            ]
+
+            wiki_file = wikipedia_fallback(
+                entity
+            )
+
+            if (
+                wiki_file
+                and wiki_file not in candidates
             ):
-                continue
+                candidates.append(wiki_file)
 
-        return (
-            None,
-            "Belum ditemukan foto dengan "
-            "lisensi yang dapat diverifikasi."
+            for filename in candidates:
+
+                try:
+                    photo = commons_photo(
+                        filename
+                    )
+
+                    if photo:
+                        return photo, ""
+
+                except (
+                    requests.RequestException,
+                    ValueError
+                ):
+                    continue
+
+    except (
+        requests.RequestException,
+        ValueError,
+        KeyError,
+        TypeError
+    ):
+        pass
+
+    return (
+        None,
+        reason or (
+            "Foto berlisensi bebas belum "
+            "ditemukan, atau layanan sumber "
+            "sedang tidak tersedia."
         )
+    )
 
-    except requests.RequestException as exc:
-
-        return (
-            None,
-            f"Layanan foto bermasalah: "
-            f"{type(exc).__name__}"
-        )
 
 
 # ------------------------------------------
