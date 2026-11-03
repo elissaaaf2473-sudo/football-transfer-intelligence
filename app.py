@@ -333,33 +333,35 @@ def load_model():
     return model
 
 
+
 # ==========================================
-# 04 - PLAYER PHOTO SEARCH
-# 5 Wikipedia language sources
-# + Wikimedia Commons
+# 04 - AUTOMATIC PLAYER PHOTO SYSTEM
 # ==========================================
 
-UA = (
-    "FootballTransferIntelligence/2.1 "
-    "(https://github.com/elissaaaf2473-sudo/"
-    "football-transfer-intelligence) requests"
-)
+import html
+import re
+from urllib.parse import urlparse
 
-LANGS = ["en", "de", "es", "fr", "id"]
+import requests
+import streamlit as st
 
-HEADERS = {
-    "User-Agent": UA,
+PHOTO_HEADERS = {
+    "User-Agent": (
+        "FootballTransferIntelligence/2.3 "
+        "(https://github.com/elissaaaf2473-sudo/"
+        "football-transfer-intelligence)"
+    ),
     "Accept": "application/json"
 }
 
 
-def api_json(url, params):
+def call_api(url, params):
 
     response = requests.get(
         url,
         params=params,
-        headers=HEADERS,
-        timeout=4
+        headers=PHOTO_HEADERS,
+        timeout=8
     )
 
     response.raise_for_status()
@@ -367,297 +369,443 @@ def api_json(url, params):
     return response.json()
 
 
-def image_bytes(url):
+def claim_values(entity, prop):
 
-    host = urlparse(url).hostname
+    values = []
 
-    if host not in [
-        "upload.wikimedia.org",
-        "commons.wikimedia.org"
-    ]:
-        return None
+    for statement in entity.get(
+        "claims", {}
+    ).get(prop, []):
 
-    response = requests.get(
-        url,
-        headers={"User-Agent": UA},
-        timeout=6
-    )
+        try:
+            values.append(
+                statement["mainsnak"]
+                ["datavalue"]["value"]
+            )
+        except (KeyError, TypeError):
+            pass
 
-    response.raise_for_status()
-
-    content_type = response.headers.get(
-        "Content-Type", ""
-    ).lower()
-
-    if not content_type.startswith("image/"):
-        return None
-
-    if len(response.content) > 6 * 1024 * 1024:
-        return None
-
-    return response.content
+    return values
 
 
-def plain_text(value):
+# ------------------------------------------
+# SOURCE 1 - EXACT TRANSFERMARKT ID
+# ------------------------------------------
 
-    return " ".join(
-        html.unescape(
-            re.sub(r"<[^>]*>", " ", value)
-        ).split()
-    )
+def find_person(player_id, name):
 
+    api = "https://www.wikidata.org/w/api.php"
 
-def photo_credit(filename):
-
-    source_url = (
-        "https://commons.wikimedia.org/wiki/File:"
-        + quote(filename.replace(" ", "_"))
-    )
-
-    credit = (
-        "Wikimedia Commons · "
-        "cek lisensi pada halaman berkas"
-    )
-
+    # Cari identitas berdasarkan ID,
+    # bukan hanya kemiripan nama.
     try:
 
-        data = api_json(
-            "https://commons.wikimedia.org/w/api.php",
+        query = (
+            "SELECT ?item WHERE { "
+            "?item "
+            "<http://www.wikidata.org/prop/"
+            "direct/P2446> "
+            f'"{int(player_id)}" . '
+            "} LIMIT 3"
+        )
+
+        data = call_api(
+            "https://query.wikidata.org/sparql",
             {
-                "action": "query",
-                "format": "json",
-                "prop": "imageinfo",
-                "iiprop": "extmetadata|url",
-                "titles": "File:" + filename
+                "query": query,
+                "format": "json"
             }
         )
 
-        item = next(
-            iter(
-                data.get("query", {})
-                .get("pages", {})
-                .values()
-            ),
-            {}
-        )
+        items = data.get(
+            "results", {}
+        ).get("bindings", [])
 
-        info = (
-            item.get("imageinfo") or [{}]
-        )[0]
+        qids = [
+            x["item"]["value"].rsplit(
+                "/", 1
+            )[-1]
+            for x in items
+        ]
 
-        meta = info.get("extmetadata", {})
+        if len(qids) == 1:
 
-        artist = plain_text(
-            meta.get("Artist", {}).get("value", "")
-        )
+            data = call_api(
+                api,
+                {
+                    "action": "wbgetentities",
+                    "format": "json",
+                    "ids": qids[0],
+                    "props": "claims|sitelinks"
+                }
+            )
 
-        license_name = plain_text(
-            meta.get(
-                "LicenseShortName", {}
-            ).get("value", "")
-        )
+            entity = data.get(
+                "entities", {}
+            ).get(qids[0], {})
 
-        credit = " · ".join(
-            x for x in [
-                artist[:100], license_name
-            ] if x
-        ) or credit
+            actual_ids = [
+                str(x)
+                for x in claim_values(
+                    entity, "P2446"
+                )
+            ]
 
-        source_url = (
-            info.get("descriptionurl")
-            or source_url
-        )
+            if str(player_id) in actual_ids:
+                return entity
 
     except (
         requests.RequestException,
         ValueError,
         KeyError,
-        StopIteration
+        TypeError
     ):
         pass
 
-    return credit, source_url
+    # --------------------------------------
+    # SOURCE 2 - WIKIDATA NAME SEARCH
+    # --------------------------------------
+
+    qids = set()
+
+    for lang in ["en", "pt", "es"]:
+
+        try:
+
+            data = call_api(
+                api,
+                {
+                    "action": "wbsearchentities",
+                    "format": "json",
+                    "language": lang,
+                    "search": name,
+                    "limit": 10
+                }
+            )
+
+            for item in data.get(
+                "search", []
+            ):
+
+                qid = item.get("id", "")
+
+                if qid.startswith("Q"):
+                    qids.add(qid)
+
+        except (
+            requests.RequestException,
+            ValueError,
+            KeyError
+        ):
+            continue
+
+    if not qids:
+        return None
+
+    # Verifikasi menggunakan ID asli
+    # agar tidak salah orang.
+
+    try:
+
+        data = call_api(
+            api,
+            {
+                "action": "wbgetentities",
+                "format": "json",
+                "ids": "|".join(sorted(qids)),
+                "props": "claims|sitelinks"
+            }
+        )
+
+        verified = []
+
+        for entity in data.get(
+            "entities", {}
+        ).values():
+
+            actual_ids = [
+                str(x)
+                for x in claim_values(
+                    entity, "P2446"
+                )
+            ]
+
+            if str(player_id) in actual_ids:
+                verified.append(entity)
+
+        if len(verified) == 1:
+            return verified[0]
+
+    except (
+        requests.RequestException,
+        ValueError,
+        KeyError,
+        TypeError
+    ):
+        pass
+
+    return None
 
 
-def wiki_candidate(name, lang, search=False):
+# ------------------------------------------
+# SOURCE 3 - MULTILINGUAL WIKIPEDIA
+# ------------------------------------------
 
-    api = (
-        f"https://{lang}.wikipedia.org/w/api.php"
+def wikipedia_fallback(entity):
+
+    languages = [
+        "en", "pt", "de",
+        "es", "fr", "id"
+    ]
+
+    for lang in languages:
+
+        entry = entity.get(
+            "sitelinks", {}
+        ).get(lang + "wiki")
+
+        if not entry:
+            continue
+
+        try:
+
+            data = call_api(
+                f"https://{lang}.wikipedia.org/w/api.php",
+                {
+                    "action": "query",
+                    "format": "json",
+                    "formatversion": 2,
+                    "prop": "pageimages",
+                    "piprop": "name",
+                    "pilicense": "free",
+                    "titles": entry["title"],
+                    "redirects": 1
+                }
+            )
+
+            pages = data.get(
+                "query", {}
+            ).get("pages", [])
+
+            for page in pages:
+
+                filename = page.get(
+                    "pageimage"
+                )
+
+                if filename:
+                    return filename
+
+        except (
+            requests.RequestException,
+            ValueError,
+            KeyError
+        ):
+            continue
+
+    return None
+
+
+# ------------------------------------------
+# SOURCE 4 - WIKIMEDIA COMMONS
+# VERIFY IMAGE LICENSE
+# ------------------------------------------
+
+def clean_html(value):
+
+    text = re.sub(
+        r"<[^>]+>",
+        " ",
+        str(value)
     )
 
-    params = {
-        "action": "query",
-        "format": "json",
-        "formatversion": 2,
-        "prop": "pageimages|info",
-        "inprop": "url",
-        "piprop": "thumbnail|name",
-        "pithumbsize": 550,
-        "pilicense": "free",
-        "redirects": 1
-    }
+    return " ".join(
+        html.unescape(text).split()
+    )
 
-    if search:
-        params.update({
-            "generator": "search",
-            "gsrsearch": f'"{name}" footballer',
-            "gsrlimit": 4
-        })
 
-    else:
-        params["titles"] = name
+def commons_photo(filename):
 
-    data = api_json(api, params)
+    data = call_api(
+        "https://commons.wikimedia.org/w/api.php",
+        {
+            "action": "query",
+            "format": "json",
+            "formatversion": 2,
+            "prop": "imageinfo",
+            "iiprop": "url|extmetadata",
+            "iiurlwidth": 450,
+            "titles": "File:" + filename,
+            "iiextmetadatafilter": (
+                "Artist|LicenseShortName|LicenseUrl"
+            )
+        }
+    )
 
     pages = data.get(
         "query", {}
     ).get("pages", [])
 
-    surname = name.strip().split()[-1].casefold()
-
     for page in pages:
 
-        title = page.get(
-            "title", ""
-        ).casefold()
+        infos = page.get(
+            "imageinfo", []
+        )
 
-        if (
-            page.get("missing")
-            or not title
-            or surname not in title
-        ):
+        if not infos:
             continue
 
-        if any(
-            word in title
-            for word in [
-                "list of ",
-                "category:",
-                "daftar "
-            ]
-        ):
-            continue
+        info = infos[0]
 
-        thumbnail = page.get(
-            "thumbnail", {}
-        ).get("source")
+        meta = info.get(
+            "extmetadata", {}
+        )
 
-        if thumbnail and page.get("pageimage"):
-            return (
-                thumbnail,
-                page["pageimage"],
-                page.get("fullurl", "")
+        license_name = clean_html(
+            meta.get(
+                "LicenseShortName", {}
+            ).get("value", "")
+        )
+
+        allowed = (
+            license_name.upper().startswith(
+                ("CC BY", "CC0")
             )
+            or license_name.lower() in [
+                "public domain", "pd"
+            ]
+        )
+
+        if not allowed:
+            continue
+
+        image_url = (
+            info.get("thumburl")
+            or info.get("url")
+        )
+
+        if not image_url:
+            continue
+
+        if urlparse(image_url).hostname != (
+            "upload.wikimedia.org"
+        ):
+            continue
+
+        artist = clean_html(
+            meta.get(
+                "Artist", {}
+            ).get("value", "")
+        )
+
+        if not artist:
+            artist = "Wikimedia Commons contributor"
+
+        return {
+            "url": image_url,
+            "source": info.get(
+                "descriptionurl", ""
+            ),
+            "artist": artist,
+            "license": license_name,
+            "license_url": meta.get(
+                "LicenseUrl", {}
+            ).get("value", "")
+        }
 
     return None
 
+
+# ------------------------------------------
+# SOURCE 5 - AUTOMATIC SEARCH + CACHE
+# ------------------------------------------
 
 @st.cache_data(
-    ttl=7 * 24 * 3600,
-    max_entries=250,
+    ttl=6 * 3600,
+    max_entries=1000,
     show_spinner=False
 )
-def get_player_photo(player_id, player_name):
+def find_player_photo(player_id, player_name):
 
-    # Cari foto bebas pakai di Wikipedia
-    for lang in LANGS:
+    try:
 
-        try:
+        entity = find_person(
+            player_id,
+            player_name
+        )
 
-            result = wiki_candidate(
-                player_name, lang
+        if entity is None:
+            return (
+                None,
+                "Identitas pemain belum dapat "
+                "dicocokkan melalui ID Transfermarkt."
             )
 
-            if not result and lang == "en":
-                result = wiki_candidate(
-                    player_name, lang,
-                    search=True
-                )
-
-            if not result:
-                continue
-
-            thumbnail, filename, article_url = result
-
-            picture = image_bytes(thumbnail)
-
-            if not picture:
-                continue
-
-            credit, source = photo_credit(
-                filename
+        # Foto utama Wikidata
+        candidates = [
+            x for x in claim_values(
+                entity, "P18"
             )
+            if isinstance(x, str)
+        ]
 
-            return {
-                "bytes": picture,
-                "credit": credit,
-                "source": source,
-                "caption": (
-                    "Foto pemain, bisa berasal "
-                    "dari musim berbeda"
-                )
-            }
+        # Alternatif Wikipedia
+        wiki_filename = wikipedia_fallback(
+            entity
+        )
 
-        except (
-            requests.RequestException,
-            ValueError,
-            KeyError,
-            TypeError
+        if (
+            wiki_filename
+            and wiki_filename not in candidates
         ):
-            continue
+            candidates.append(wiki_filename)
 
-    # Fallback khusus Haaland
-    # Foto CC BY 4.0 Wikimedia Commons
-    if (
-        player_name.strip().casefold()
-        == "erling haaland"
-    ):
+        # Periksa metadata dan lisensi
+        for filename in candidates:
 
-        file_name = (
-            "Erling Haaland June 2025.jpg"
+            try:
+
+                photo = commons_photo(
+                    filename
+                )
+
+                if photo:
+                    return photo, ""
+
+            except (
+                requests.RequestException,
+                ValueError,
+                KeyError,
+                TypeError
+            ):
+                continue
+
+        return (
+            None,
+            "Belum ditemukan foto dengan "
+            "lisensi yang dapat diverifikasi."
         )
 
-        file_url = (
-            "https://commons.wikimedia.org/"
-            "wiki/Special:FilePath/"
-            + quote(file_name)
-            + "?width=500"
+    except requests.RequestException as exc:
+
+        return (
+            None,
+            f"Layanan foto bermasalah: "
+            f"{type(exc).__name__}"
         )
 
-        try:
 
-            picture = image_bytes(file_url)
-
-            if picture:
-
-                return {
-                    "bytes": picture,
-                    "credit": (
-                        "MichaelEmilio · CC BY 4.0 "
-                        "· Wikimedia Commons"
-                    ),
-                    "source": (
-                        "https://commons.wikimedia.org/"
-                        "wiki/File:Erling_Haaland_June_2025.jpg"
-                    ),
-                    "caption": (
-                        "Foto tahun 2025, "
-                        "bukan foto transfer 2019"
-                    )
-                }
-
-        except requests.RequestException:
-            pass
-
-    return None
-
+# ------------------------------------------
+# DISPLAY PLAYER PHOTO
+# ------------------------------------------
 
 def show_player_photo(player_id, player_name):
 
     with st.spinner(
-        "Mencari foto berlisensi bebas..."
+        "Mencari foto pemain otomatis..."
     ):
-        photo = get_player_photo(
+
+        photo, reason = find_player_photo(
             str(player_id),
             str(player_name)
         )
@@ -665,61 +813,48 @@ def show_player_photo(player_id, player_name):
     if photo:
 
         st.image(
-            photo["bytes"],
-            width=230,
-            alt=f"Foto {player_name}"
-        )
-
-        st.caption(photo["caption"])
-        st.caption(
-            "Kredit: " + photo["credit"]
-        )
-
-        st.markdown(
-            f"[📷 Sumber foto & lisensi]"
-            f"({photo['source']})"
-        )
-
-    elif (
-        str(player_name).strip().casefold()
-        == "erling haaland"
-    ):
-
-        # Fallback browser jika server
-        # tidak bisa mengambil gambar.
-        url = (
-            "https://commons.wikimedia.org/"
-            "wiki/Special:FilePath/"
-            "Erling_Haaland_June_2025.jpg?width=500"
-        )
-
-        st.markdown(
-            f'<img src="{html.escape(url, quote=True)}" '
-            'alt="Erling Haaland" '
-            'style="max-width:230px;width:100%;'
-            'border-radius:14px;" />',
-            unsafe_allow_html=True
+            photo["url"],
+            width=230
         )
 
         st.caption(
-            "Foto 2025 · MichaelEmilio · "
-            "CC BY 4.0. Bukan foto transfer 2019."
+            "Foto profil · "
+            "Mungkin berasal dari musim berbeda."
         )
 
-        st.markdown(
-            "[📷 Sumber & lisensi]"
-            "(https://commons.wikimedia.org/"
-            "wiki/File:Erling_Haaland_June_2025.jpg)"
+        st.caption(
+            f"Kredit: {photo['artist']} "
+            f"· {photo['license']}"
         )
+
+        if photo["source"]:
+
+            st.markdown(
+                f"[📷 Sumber dan lisensi foto]"
+                f"({photo['source']})"
+            )
+
+        license_url = str(
+            photo.get("license_url", "")
+        )
+
+        if license_url.startswith("https://"):
+
+            st.markdown(
+                f"[Teks lisensi]({license_url})"
+            )
 
     else:
 
-        st.markdown("### 👤")
-
-        st.caption(
-            "Foto yang sesuai belum ditemukan. "
-            "Tidak menampilkan foto orang lain."
+        st.info(
+            "👤 Foto terverifikasi "
+            "belum tersedia."
         )
+
+        with st.expander(
+            "Kenapa foto tidak muncul?"
+        ):
+            st.caption(reason)
 
 
 # ==========================================
