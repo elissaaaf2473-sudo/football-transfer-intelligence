@@ -1,6 +1,5 @@
 
 from pathlib import Path
-import os
 import shutil
 import tempfile
 
@@ -31,7 +30,13 @@ FEATURES = [
 ]
 
 CATS = ["left_club_id", "joined_club_id"]
-TEAL = "#2DD4BF"
+
+COLORS = {
+    "teal": "#2DD4BF",
+    "blue": "#60A5FA",
+    "orange": "#F59E0B",
+    "purple": "#A78BFA"
+}
 
 st.markdown("""
 <style>
@@ -42,182 +47,113 @@ st.markdown("""
     background-color: #111B2A;
 }
 .block-container {
-    padding-top: 2rem;
+    padding-top: 1.6rem;
+    max-width: 1350px;
 }
-div[data-testid="stMetric"] {
+[data-testid="stMetric"] {
     background: #132238;
     border: 1px solid #263951;
     border-radius: 14px;
-    padding: 16px;
+    padding: 15px;
 }
-div[data-testid="stMetricValue"] {
+[data-testid="stMetricValue"] {
     color: #2DD4BF;
+}
+h1, h2, h3 {
+    letter-spacing: -.02em;
 }
 </style>
 """, unsafe_allow_html=True)
 
 
 # ==========================================
-# 02 - VERIFY REQUIRED FILES
+# 02 - REQUIRED DATA FILES
 # ==========================================
 
-required = [
-    "final_test_results.csv",
-    "shap_importance.csv",
+required_files = [
+    "club_catalog_named.csv",
+    "player_scenarios.csv",
     "coverage.csv",
-    "club_catalog.csv"
+    "final_test_results.csv",
+    "shap_importance.csv"
 ]
 
 missing = [
-    f for f in required
-    if not (ROOT / f).is_file()
+    name for name in required_files
+    if not (ROOT / name).is_file()
 ]
-
-parts = sorted(
-    ROOT.glob("catboost_final.cbm.part*")
-)
-
-if (
-    not (ROOT / "catboost_final.cbm").is_file()
-    and not parts
-):
-    missing.append(
-        "catboost_final.cbm.part001, part002, dst."
-    )
 
 if missing:
     st.error(
-        "File belum lengkap: " + ", ".join(missing)
+        "File belum tersedia di GitHub: "
+        + ", ".join(missing)
+    )
+    st.info(
+        "Upload CSV dari Google Drive → "
+        "Football_ML → research_outputs."
     )
     st.stop()
 
 
 # ==========================================
-# 03 - LOAD SPLIT CATBOOST MODEL
-# ==========================================
-
-@st.cache_resource(
-    show_spinner="Memuat model CatBoost..."
-)
-def load_model():
-
-    model = CatBoostRegressor()
-    original = ROOT / "catboost_final.cbm"
-
-    # Jika model tersedia dalam satu file
-    if original.is_file():
-        model.load_model(str(original))
-        return model
-
-    # Jika model dipecah menjadi beberapa part
-    chunks = sorted(
-        ROOT.glob("catboost_final.cbm.part*")
-    )
-
-    numbers = []
-
-    for path in chunks:
-
-        part_number = path.name.rsplit(
-            ".part", 1
-        )[-1]
-
-        if not part_number.isdigit():
-            st.error(
-                f"Nama file part tidak valid: {path.name}"
-            )
-            st.stop()
-
-        numbers.append(int(part_number))
-
-    expected = list(
-        range(1, len(numbers) + 1)
-    )
-
-    if numbers != expected:
-        st.error(
-            "Nomor part tidak berurutan. "
-            "Upload semua bagian model!"
-        )
-        st.stop()
-
-    # Gabungkan part sementara
-    with tempfile.NamedTemporaryFile(
-        suffix=".cbm",
-        delete=False
-    ) as temp:
-
-        temporary_path = Path(temp.name)
-
-        for part in chunks:
-            with part.open("rb") as source:
-                shutil.copyfileobj(
-                    source, temp
-                )
-
-    try:
-        model.load_model(
-            str(temporary_path)
-        )
-
-    except Exception as exc:
-        st.error(
-            "Model tidak bisa dimuat. "
-            "Pastikan semua part berasal "
-            "dari ZIP yang sama."
-        )
-        st.exception(exc)
-        st.stop()
-
-    finally:
-        temporary_path.unlink(
-            missing_ok=True
-        )
-
-    return model
-
-
-# ==========================================
-# 04 - LOAD RESEARCH DATA
+# 03 - LOAD DATA
 # ==========================================
 
 @st.cache_data(show_spinner=False)
-def read_csv(name, **kwargs):
-    return pd.read_csv(
-        ROOT / name,
-        **kwargs
+def load_tables():
+
+    clubs = pd.read_csv(
+        ROOT / "club_catalog_named.csv",
+        dtype={"club_id": "string"}
     )
 
+    scenarios = pd.read_csv(
+        ROOT / "player_scenarios.csv",
+        dtype={
+            "player_id": "string",
+            "left_club_id": "string",
+            "joined_club_id": "string"
+        }
+    )
 
-model = load_model()
+    coverage = pd.read_csv(
+        ROOT / "coverage.csv"
+    )
 
-results = read_csv(
-    "final_test_results.csv"
+    results = pd.read_csv(
+        ROOT / "final_test_results.csv"
+    )
+
+    shap = pd.read_csv(
+        ROOT / "shap_importance.csv"
+    )
+
+    return clubs, scenarios, coverage, results, shap
+
+
+clubs, scenarios, coverage, results, shap_global = (
+    load_tables()
 )
 
-coverage = read_csv(
-    "coverage.csv"
-)
-
-shap_global = read_csv(
-    "shap_importance.csv"
-)
-
-clubs = read_csv(
-    "club_catalog.csv",
-    dtype={"club_id": str}
-)
-
-
-# ==========================================
-# 05 - DATA VALIDATION
-# ==========================================
-
-expected = [
+required_columns = [
     (
-        results,
-        {"Model", "MAE", "RMSE", "R2"},
-        "final_test_results.csv"
+        clubs,
+        {"club_id", "club_name", "record_count"},
+        "club_catalog_named.csv"
+    ),
+    (
+        scenarios,
+        {
+            "player_id",
+            "player_name",
+            "year",
+            "age_approx",
+            "left_club_id",
+            "joined_club_id",
+            "origin_name",
+            "destination_name"
+        },
+        "player_scenarios.csv"
     ),
     (
         coverage,
@@ -230,141 +166,384 @@ expected = [
         "coverage.csv"
     ),
     (
+        results,
+        {"Model", "MAE", "RMSE", "R2"},
+        "final_test_results.csv"
+    ),
+    (
         shap_global,
         {"Feature", "Mean_Absolute_SHAP"},
         "shap_importance.csv"
-    ),
-    (
-        clubs,
-        {"club_id", "record_count"},
-        "club_catalog.csv"
     )
 ]
 
-for table, cols, filename in expected:
-
-    if not cols.issubset(table.columns):
+for table, needed, filename in required_columns:
+    if not needed.issubset(table.columns):
         st.error(
-            f"Kolom {filename} tidak sesuai. "
-            f"Dibutuhkan: {sorted(cols)}"
+            f"Kolom {filename} tidak sesuai: "
+            f"{sorted(needed - set(table.columns))}"
         )
         st.stop()
 
 
-clubs = clubs.dropna(
-    subset=["club_id"]
-).copy()
+# ==========================================
+# 04 - PREPROCESS IDENTIFIERS
+# ==========================================
+
+def clean_ids(series):
+    return (
+        pd.to_numeric(
+            series,
+            errors="coerce"
+        )
+        .astype("Int64")
+        .astype("string")
+    )
+
+
+clubs["club_id"] = clean_ids(
+    clubs["club_id"]
+)
+
+clubs["club_name"] = (
+    clubs["club_name"]
+    .fillna("Klub tidak diketahui")
+    .astype(str)
+)
 
 clubs["record_count"] = pd.to_numeric(
     clubs["record_count"],
     errors="coerce"
 ).fillna(0)
 
-clubs = clubs.sort_values(
-    "record_count",
-    ascending=False
-)
-
-club_ids = clubs["club_id"].tolist()
-
-club_count = dict(
-    zip(
-        club_ids,
-        clubs["record_count"].astype(int)
+clubs = (
+    clubs.dropna(subset=["club_id"])
+    .drop_duplicates("club_id")
+    .sort_values(
+        "record_count",
+        ascending=False
     )
+    .reset_index(drop=True)
 )
 
-if not club_ids:
-    st.error("Daftar klub kosong.")
+for col in [
+    "player_id",
+    "left_club_id",
+    "joined_club_id"
+]:
+    scenarios[col] = clean_ids(
+        scenarios[col]
+    )
+
+for col in ["year", "age_approx"]:
+    scenarios[col] = pd.to_numeric(
+        scenarios[col],
+        errors="coerce"
+    )
+
+for col in [
+    "player_name",
+    "origin_name",
+    "destination_name"
+]:
+    scenarios[col] = (
+        scenarios[col]
+        .fillna("Tidak diketahui")
+        .astype(str)
+    )
+
+scenarios = scenarios.dropna(
+    subset=[
+        "player_id",
+        "year",
+        "age_approx",
+        "left_club_id",
+        "joined_club_id"
+    ]
+)
+
+scenarios = scenarios[
+    scenarios["year"].between(2010, 2021)
+].copy()
+
+if clubs.empty or scenarios.empty:
+    st.error(
+        "Katalog nama klub atau "
+        "skenario pemain kosong."
+    )
     st.stop()
 
 
 # ==========================================
-# 06 - SIDEBAR INPUT
+# 05 - HUMAN READABLE CLUB NAMES
+# ==========================================
+
+names = dict(
+    zip(
+        clubs["club_id"].astype(str),
+        clubs["club_name"]
+    )
+)
+
+name_frequency = (
+    clubs["club_name"].value_counts()
+)
+
+def club_label(club_id):
+
+    text = names.get(
+        str(club_id),
+        "Klub tidak diketahui"
+    )
+
+    if text in [
+        "Unknown Club",
+        "Klub tidak diketahui"
+    ]:
+        return (
+            f"Klub belum teridentifikasi "
+            f"(ID {club_id})"
+        )
+
+    if name_frequency.get(text, 0) > 1:
+        return f"{text} (ID {club_id})"
+
+    return text
+
+
+club_ids = (
+    clubs["club_id"]
+    .astype(str)
+    .tolist()
+)
+
+
+# ==========================================
+# 06 - LOAD SPLIT CATBOOST MODEL
+# ==========================================
+
+@st.cache_resource(
+    show_spinner="Memuat model CatBoost..."
+)
+def load_model():
+
+    original = (
+        ROOT / "catboost_final.cbm"
+    )
+
+    model = CatBoostRegressor()
+
+    # Jika model utuh tersedia
+    if original.is_file():
+        model.load_model(str(original))
+        return model
+
+    # Jika model dibagi menjadi part
+    parts = sorted(
+        ROOT.glob(
+            "catboost_final.cbm.part*"
+        )
+    )
+
+    nums = []
+
+    for path in parts:
+
+        suffix = path.name.rsplit(
+            ".part", 1
+        )[-1]
+
+        if suffix.isdigit():
+            nums.append(int(suffix))
+
+    if (
+        not parts
+        or len(nums) != len(parts)
+        or nums != list(
+            range(1, len(parts) + 1)
+        )
+    ):
+        raise RuntimeError(
+            "File part model tidak lengkap "
+            "atau tidak berurutan."
+        )
+
+    # Gabungkan semua bagian sementara
+    with tempfile.NamedTemporaryFile(
+        suffix=".cbm"
+    ) as temporary:
+
+        for part in parts:
+
+            with part.open("rb") as source:
+                shutil.copyfileobj(
+                    source,
+                    temporary
+                )
+
+        temporary.flush()
+
+        model.load_model(
+            temporary.name
+        )
+
+    return model
+
+
+# ==========================================
+# 07 - PREDICTION FUNCTION
+# ==========================================
+
+def predict_scenario(item, title):
+
+    inputs = pd.DataFrame(
+        [{
+            "year": int(item["year"]),
+            "age_approx": float(
+                item["age_approx"]
+            ),
+            "left_club_id": str(
+                item["left_club_id"]
+            ),
+            "joined_club_id": str(
+                item["joined_club_id"]
+            )
+        }],
+        columns=FEATURES
+    )
+
+    try:
+
+        model = load_model()
+
+        value_log = float(
+            model.predict(inputs)[0]
+        )
+
+        value = float(
+            np.expm1(value_log)
+        )
+
+        if not np.isfinite(value):
+            raise ValueError(
+                "Hasil prediksi tidak valid."
+            )
+
+    except Exception as exc:
+
+        st.error(
+            "Model belum bisa dijalankan. "
+            "Pastikan seluruh file .part "
+            "sudah terunggah."
+        )
+
+        st.exception(exc)
+        return
+
+    st.session_state[
+        "last_prediction"
+    ] = {
+        "inputs": inputs.iloc[0].to_dict(),
+        "title": title,
+        "fee": max(value, 0.0)
+    }
+
+
+def show_prediction():
+
+    result = st.session_state.get(
+        "last_prediction"
+    )
+
+    if not result:
+        return
+
+    st.divider()
+
+    st.subheader(
+        "Hasil estimasi terakhir"
+    )
+
+    st.caption(
+        result["title"]
+    )
+
+    st.metric(
+        "Estimasi biaya transfer "
+        "tercatat (satuan dataset)",
+        f"{result['fee']:,.0f}"
+    )
+
+    st.info(
+        "Ini simulasi berdasarkan tahun, "
+        "usia, klub asal dan tujuan; "
+        "bukan harga pasar aktual "
+        "atau harga pasti seorang pemain."
+    )
+
+    st.caption(
+        "Nama pemain hanya digunakan "
+        "untuk mencari skenario historis. "
+        "Nama dan statistik performanya "
+        "bukan fitur model."
+    )
+
+
+# ==========================================
+# 08 - PLOTLY STYLING
+# ==========================================
+
+def plot_style(fig, height=440):
+
+    fig.update_layout(
+        template="plotly_dark",
+        paper_bgcolor="#0B1220",
+        plot_bgcolor="#132238",
+        height=height,
+        margin=dict(
+            l=30,
+            r=25,
+            t=40,
+            b=40
+        )
+    )
+
+    return fig
+
+
+# ==========================================
+# 09 - NAVIGATION
 # ==========================================
 
 st.sidebar.title(
-    "⚽ Transfer Intelligence"
+    "⚽ Football Transfer Intelligence"
 )
 
 st.sidebar.caption(
-    "Simulator skenario transfer historis"
+    "Interactive historical transfer analytics"
 )
 
-with st.sidebar.form("fee_form"):
-
-    year = st.slider(
-        "Tahun transfer",
-        2010,
-        2021,
-        2021
-    )
-
-    age = st.number_input(
-        "Usia pemain",
-        min_value=15,
-        max_value=45,
-        value=24
-    )
-
-    origin = st.selectbox(
-        "Klub asal",
-        club_ids,
-        format_func=lambda x: (
-            f"Club ID {x} · "
-            f"{club_count.get(x, 0):,} catatan"
-        )
-    )
-
-    destination = st.selectbox(
-        "Klub tujuan",
-        club_ids,
-        index=1 if len(club_ids) > 1 else 0,
-        format_func=lambda x: (
-            f"Club ID {x} · "
-            f"{club_count.get(x, 0):,} catatan"
-        )
-    )
-
-    submit = st.form_submit_button(
-        "⚡ Estimate Transfer Fee",
-        use_container_width=True
-    )
-
-
-if submit:
-    st.session_state["scenario"] = {
-        "year": int(year),
-        "age_approx": float(age),
-        "left_club_id": str(origin),
-        "joined_club_id": str(destination)
-    }
-
+page = st.sidebar.radio(
+    "Menu",
+    [
+        "🏠 Beranda",
+        "🔎 Cari Pemain",
+        "⚽ Simulasi Transfer",
+        "📊 Analisis & Model",
+        "🧠 Explainable AI"
+    ]
+)
 
 st.sidebar.divider()
 
 st.sidebar.caption(
-    "Model: CatBoost, depth 8, "
-    "1.000 iterasi, target log1p"
+    "Penelitian: transfer permanen "
+    "berbiaya positif, 2010–2023."
 )
 
 st.sidebar.caption(
-    "Simulasi historis, bukan "
-    "harga pasar terkini."
-)
-
-
-# ==========================================
-# 07 - MAIN DASHBOARD
-# ==========================================
-
-st.title(
-    "⚽ Football Transfer Intelligence 2.0"
-)
-
-st.caption(
-    "Interactive ML Research · CatBoost · "
-    "Temporal Validation · Explainable AI"
+    "Rentang input simulasi "
+    "dibatasi pada 2010–2021."
 )
 
 cat = results.loc[
@@ -377,81 +556,336 @@ base = results.loc[
 
 if cat.empty or base.empty:
     st.error(
-        "Baris CatBoost / Median Baseline "
-        "tidak ditemukan di hasil test."
+        "Hasil CatBoost atau Median "
+        "Baseline tidak ditemukan."
     )
     st.stop()
 
-cat_mae = float(cat.iloc[0]["MAE"])
-base_mae = float(base.iloc[0]["MAE"])
-score = float(cat.iloc[0]["R2"])
-
-improvement = (
-    (base_mae - cat_mae)
-    / base_mae * 100
+cat_mae = float(
+    cat.iloc[0]["MAE"]
 )
 
-k1, k2, k3, k4 = st.columns(4)
-
-k1.metric(
-    "Final test MAE",
-    f"{cat_mae:,.0f}"
+cat_r2 = float(
+    cat.iloc[0]["R2"]
 )
 
-k2.metric(
-    "Final test R²",
-    f"{score:.4f}"
+base_mae = float(
+    base.iloc[0]["MAE"]
 )
-
-k3.metric(
-    "Perbaikan vs baseline",
-    f"{improvement:.2f}%"
-)
-
-k4.metric(
-    "Test transactions",
-    "5,332"
-)
-
-
-market, simulator, lab, explain = st.tabs([
-    "📈 Market Explorer",
-    "🧮 Fee Simulator",
-    "🧪 Model Laboratory",
-    "🔍 Explainable AI"
-])
 
 
 # ==========================================
-# 08 - CHART STYLING
+# 10 - HOME PAGE
 # ==========================================
 
-def style(fig, height=450):
+if page == "🏠 Beranda":
 
-    fig.update_layout(
-        template="plotly_dark",
-        paper_bgcolor="#0B1220",
-        plot_bgcolor="#132238",
-        height=height,
-        margin=dict(
-            l=30,
-            r=25,
-            t=45,
-            b=35
+    st.title(
+        "⚽ Football Transfer Intelligence 2.0"
+    )
+
+    st.write(
+        "Jelajahi perpindahan pemain historis "
+        "dan simulasikan biaya transfer "
+        "menggunakan CatBoost."
+    )
+
+    a, b, c = st.columns(3)
+
+    a.metric(
+        "Final test MAE",
+        f"{cat_mae:,.0f}"
+    )
+
+    b.metric(
+        "Final test R²",
+        f"{cat_r2:.4f}"
+    )
+
+    c.metric(
+        "MAE lebih rendah dari baseline",
+        f"{(1-cat_mae/base_mae)*100:.2f}%"
+    )
+
+    st.markdown(
+        "### Mulai dari mana?"
+    )
+
+    st.markdown(
+        "**🔎 Cari Pemain:** ketik nama "
+        "lalu pilih transaksi historis.  \n"
+        "**⚽ Simulasi Transfer:** pilih "
+        "dua nama klub, tahun dan usia.  \n"
+        "**📊 Analisis & Model:** lihat "
+        "grafik serta panduan membacanya.  \n"
+        "**🧠 Explainable AI:** pahami "
+        "fitur yang memengaruhi prediksi."
+    )
+
+    st.warning(
+        "Model tidak mempelajari performa "
+        "individual pemain. Prediksi di sini "
+        "bukan nilai pasar terkini."
+    )
+
+
+# ==========================================
+# 11 - SEARCH HISTORICAL PLAYER
+# ==========================================
+
+elif page == "🔎 Cari Pemain":
+
+    st.title(
+        "🔎 Cari Pemain Historis"
+    )
+
+    st.write(
+        "Cari nama pemain, pilih catatan "
+        "perpindahannya, lalu jalankan "
+        "simulasi model."
+    )
+
+    player_list = (
+        scenarios.groupby(
+            "player_id",
+            as_index=False
+        )
+        .agg(
+            player_name=(
+                "player_name",
+                "first"
+            ),
+            jumlah=(
+                "player_id",
+                "size"
+            )
+        )
+        .sort_values(
+            ["jumlah", "player_name"],
+            ascending=[False, True]
         )
     )
 
-    return fig
+    search = st.text_input(
+        "Cari nama pemain",
+        placeholder=(
+            "Contoh: Berbatov, Ronaldo, "
+            "Ziegler..."
+        )
+    )
+
+    if search.strip():
+
+        found = player_list[
+            player_list[
+                "player_name"
+            ].str.contains(
+                search.strip(),
+                case=False,
+                regex=False,
+                na=False
+            )
+        ].head(100)
+
+    else:
+
+        found = player_list.head(100)
+
+        st.caption(
+            "Menampilkan hingga 100 pemain "
+            "teratas. Ketik nama untuk "
+            "mencari pemain lainnya."
+        )
+
+    if found.empty:
+
+        st.warning(
+            "Nama tidak ditemukan dalam "
+            "skenario development 2010–2021."
+        )
+
+    else:
+
+        players_map = found.set_index(
+            "player_id"
+        )
+
+        player_id = st.selectbox(
+            "Pilih pemain",
+            found[
+                "player_id"
+            ].astype(str).tolist(),
+            format_func=lambda pid: (
+                f"{players_map.loc[pid, 'player_name']} "
+                f"· {int(players_map.loc[pid, 'jumlah'])} "
+                "catatan"
+            )
+        )
+
+        history = scenarios[
+            scenarios[
+                "player_id"
+            ].astype(str) == player_id
+        ].copy()
+
+        history = (
+            history.sort_values(
+                "year",
+                ascending=False
+            )
+            .reset_index(drop=True)
+        )
+
+        chosen_idx = st.selectbox(
+            "Pilih riwayat transfer",
+            list(range(len(history))),
+            format_func=lambda i: (
+                f"{int(history.loc[i, 'year'])}"
+                f" · {history.loc[i, 'origin_name']}"
+                f" → {history.loc[i, 'destination_name']}"
+                f" · usia "
+                f"{history.loc[i, 'age_approx']:.0f}"
+            )
+        )
+
+        selected = history.loc[
+            chosen_idx
+        ]
+
+        st.subheader(
+            selected["player_name"]
+        )
+
+        st.write(
+            f"**{selected['origin_name']} "
+            f"→ {selected['destination_name']}**"
+        )
+
+        st.caption(
+            f"Tahun {int(selected['year'])} "
+            f"· Usia pada data: "
+            f"{selected['age_approx']:.0f} tahun"
+        )
+
+        if st.button(
+            "⚡ Prediksi skenario ini",
+            type="primary"
+        ):
+
+            predict_scenario(
+                selected,
+                (
+                    f"{selected['player_name']} "
+                    f"· {int(selected['year'])}: "
+                    f"{selected['origin_name']} "
+                    f"→ {selected['destination_name']}"
+                )
+            )
+
+        show_prediction()
 
 
 # ==========================================
-# 09 - MARKET EXPLORER
+# 12 - CUSTOM TRANSFER SIMULATOR
 # ==========================================
 
-with market:
+elif page == "⚽ Simulasi Transfer":
+
+    st.title(
+        "⚽ Simulasi Transfer Sendiri"
+    )
+
+    st.write(
+        "Pilih nama klub, bukan ID. "
+        "Data klub berasal dari katalog "
+        "historis penelitian."
+    )
+
+    with st.form("custom_prediction"):
+
+        x, y = st.columns(2)
+
+        with x:
+
+            origin = st.selectbox(
+                "Klub asal",
+                club_ids,
+                format_func=club_label
+            )
+
+            year = st.slider(
+                "Tahun skenario historis",
+                2010,
+                2021,
+                2021
+            )
+
+        with y:
+
+            destination = st.selectbox(
+                "Klub tujuan",
+                club_ids,
+                index=(
+                    1 if len(club_ids) > 1
+                    else 0
+                ),
+                format_func=club_label
+            )
+
+            age = st.number_input(
+                "Usia pemain",
+                min_value=15,
+                max_value=45,
+                value=24,
+                step=1
+            )
+
+        submit = st.form_submit_button(
+            "⚡ Estimate Transfer Fee",
+            type="primary",
+            use_container_width=True
+        )
+
+    if submit:
+
+        if origin == destination:
+
+            st.warning(
+                "Klub asal dan tujuan harus "
+                "berbeda agar skenario masuk akal."
+            )
+
+        else:
+
+            predict_scenario(
+                {
+                    "year": year,
+                    "age_approx": age,
+                    "left_club_id": origin,
+                    "joined_club_id": destination
+                },
+                (
+                    f"{club_label(origin)} "
+                    f"→ {club_label(destination)} "
+                    f"· {year} · usia {age}"
+                )
+            )
+
+    show_prediction()
+
+
+# ==========================================
+# 13 - ANALYTICS AND MODEL LABORATORY
+# ==========================================
+
+elif page == "📊 Analisis & Model":
+
+    st.title(
+        "📊 Analisis Pasar & Evaluasi Model"
+    )
 
     st.subheader(
-        "Recorded Transfer Fee Coverage"
+        "1. Data coverage berdasarkan tahun"
     )
 
     coverage["year"] = pd.to_numeric(
@@ -459,395 +893,355 @@ with market:
         errors="coerce"
     )
 
-    years = (
-        int(coverage["year"].min()),
-        int(coverage["year"].max())
+    coverage = (
+        coverage.dropna(
+            subset=["year"]
+        )
+        .sort_values("year")
     )
 
-    chosen = st.slider(
-        "Rentang tahun",
-        years[0],
-        years[1],
-        years
+    min_y = int(
+        coverage["year"].min()
     )
 
-    metric_label = st.selectbox(
-        "Tampilkan",
-        [
-            "Persentase fee positif",
-            "Jumlah fee positif",
-            "Semua catatan non-loan"
-        ]
+    max_y = int(
+        coverage["year"].max()
     )
 
-    cols = {
+    year_range = st.slider(
+        "Pilih rentang tahun",
+        min_y,
+        max_y,
+        (min_y, max_y)
+    )
+
+    metric_options = {
         "Persentase fee positif":
             "positive_fee_pct",
         "Jumlah fee positif":
             "positive_fee_records",
-        "Semua catatan non-loan":
+        "Semua transfer non-loan tercatat":
             "total_records"
     }
 
-    filtered = coverage[
-        coverage["year"].between(*chosen)
+    chosen = st.selectbox(
+        "Tampilkan",
+        list(metric_options)
+    )
+
+    shown = coverage[
+        coverage[
+            "year"
+        ].between(*year_range)
     ]
 
     fig = px.line(
-        filtered,
+        shown,
         x="year",
-        y=cols[metric_label],
+        y=metric_options[chosen],
         markers=True,
         labels={
             "year": "Tahun",
-            cols[metric_label]: metric_label
+            metric_options[chosen]: chosen
         }
     )
 
     fig.update_traces(
-        line_color=TEAL,
+        line_color=COLORS["teal"],
         line_width=3,
-        marker_size=9
+        marker_size=8
     )
 
     fig.update_xaxes(dtick=1)
 
     st.plotly_chart(
-        style(fig),
+        plot_style(fig),
         use_container_width=True
     )
 
     with st.expander(
-        "📖 Cara membaca grafik"
+        "📖 Cara membaca grafik ini"
     ):
 
         st.write(
-            "Grafik menunjukkan catatan "
-            "transfer non-loan dengan fee positif. "
-            "Fee nol atau tak tercatat tidak "
-            "otomatis berarti transfer gratis. "
-            "Angka ini bukan cakupan seluruh "
-            "transfer dunia."
+            "Grafik menunjukkan banyaknya "
+            "catatan transfer non-loan atau "
+            "bagian yang memiliki fee positif "
+            "tercatat. Data tanpa fee positif "
+            "tidak otomatis berarti gratis."
         )
-
-
-# ==========================================
-# 10 - FEE SIMULATOR
-# ==========================================
-
-with simulator:
 
     st.subheader(
-        "Simulasi Estimasi Biaya Transfer"
-    )
-
-    st.caption(
-        "Ubah input pada sidebar, lalu klik "
-        "**Estimate Transfer Fee**."
-    )
-
-    scenario = st.session_state.get(
-        "scenario"
-    )
-
-    if scenario is None:
-
-        st.info(
-            "Belum ada skenario. Pilih tahun, "
-            "usia, klub asal, dan klub tujuan "
-            "di sidebar."
-        )
-
-    else:
-
-        frame = pd.DataFrame(
-            [scenario],
-            columns=FEATURES
-        )
-
-        for col in CATS:
-            frame[col] = frame[col].astype(str)
-
-        prediction_log = float(
-            model.predict(frame)[0]
-        )
-
-        estimate = max(
-            float(np.expm1(prediction_log)),
-            0
-        )
-
-        st.metric(
-            "Estimated Recorded Fee",
-            f"{estimate:,.0f}"
-        )
-
-        st.dataframe(
-            frame,
-            hide_index=True,
-            use_container_width=True
-        )
-
-        if (
-            scenario["left_club_id"]
-            == scenario["joined_club_id"]
-        ):
-            st.warning(
-                "Klub asal sama dengan tujuan. "
-                "Skenario ini mungkin tidak realistis."
-            )
-
-        st.info(
-            "Angka mengikuti satuan dalam dataset, "
-            "bukan valuasi pemain saat ini. "
-            "Model hanya dilatih untuk transfer "
-            "permanen dengan biaya positif tercatat."
-        )
-
-
-# ==========================================
-# 11 - MODEL LABORATORY
-# ==========================================
-
-with lab:
-
-    st.subheader(
-        "Evaluasi Final Test 2022-2023"
+        "2. Perbandingan model "
+        "pada final test 2022–2023"
     )
 
     metric = st.selectbox(
-        "Pilih metrik",
+        "Pilih metrik evaluasi",
         ["MAE", "RMSE", "R2"]
     )
 
-    ranking = results.sort_values(
+    ordered = results.sort_values(
         metric,
         ascending=(metric != "R2")
     )
 
-    fig = px.bar(
-        ranking,
+    fig2 = px.bar(
+        ordered,
         x="Model",
         y=metric,
-        color="Model",
-        text=metric
+        text=metric,
+        color="Model"
     )
 
-    fig.update_layout(
+    fig2.update_layout(
         showlegend=False
     )
 
-    fig.update_traces(
-        textposition="outside"
-    )
-
     st.plotly_chart(
-        style(fig),
-        use_container_width=True
-    )
-
-    st.dataframe(
-        ranking,
-        hide_index=True,
+        plot_style(fig2),
         use_container_width=True
     )
 
     with st.expander(
-        "📖 Cara membaca metrik"
+        "📖 Arti MAE, RMSE, dan R²"
     ):
 
         st.markdown(
-            "**MAE:** Rata-rata selisih absolut. "
-            "Makin kecil makin baik.\n\n"
-            "**RMSE:** Lebih sensitif terhadap "
-            "kesalahan ekstrem.\n\n"
-            "**R²:** Kemampuan menjelaskan "
-            "variasi target dibanding prediksi "
-            "konstan. R² bukan persentase akurasi."
+            "**MAE:** rata-rata selisih "
+            "absolut prediksi dengan "
+            "nilai sebenarnya. "
+            "Lebih kecil lebih baik.  \n"
+            "**RMSE:** lebih menghukum "
+            "kesalahan besar. "
+            "Lebih kecil lebih baik.  \n"
+            "**R²:** ukuran variasi target "
+            "yang dijelaskan dibanding "
+            "prediksi konstan rata-rata; "
+            "**bukan akurasi persen**."
         )
 
-    # Grafik tambahan jika CSV tersedia
-    if (ROOT / "final_predictions.csv").exists():
+    # Grafik optional dari prediksi final
+    if (
+        ROOT / "final_predictions.csv"
+    ).is_file():
 
-        pred = read_csv(
-            "final_predictions.csv"
+        st.subheader(
+            "3. Actual vs Predicted"
         )
 
-        needed = {
+        predicted = pd.read_csv(
+            ROOT / "final_predictions.csv"
+        )
+
+        if {
             "actual_fee",
             "predicted_fee",
             "year"
-        }
+        }.issubset(predicted.columns):
 
-        if needed.issubset(pred.columns):
-
-            st.markdown(
-                "#### Actual vs Predicted"
-            )
-
-            show = pred[
-                (pred["actual_fee"] > 0)
-                & (pred["predicted_fee"] > 0)
+            predicted = predicted[
+                (predicted["actual_fee"] > 0)
+                &
+                (predicted["predicted_fee"] > 0)
             ].copy()
 
-            show["year"] = (
-                show["year"].astype(str)
+            predicted["year"] = (
+                predicted["year"].astype(str)
             )
 
-            fig = px.scatter(
-                show,
+            fig3 = px.scatter(
+                predicted,
                 x="actual_fee",
                 y="predicted_fee",
                 color="year",
+                opacity=0.45,
                 log_x=True,
                 log_y=True,
-                opacity=0.5,
                 render_mode="webgl"
             )
 
-            lo = float(min(
-                show["actual_fee"].min(),
-                show["predicted_fee"].min()
-            ))
+            edge_low = min(
+                predicted["actual_fee"].min(),
+                predicted["predicted_fee"].min()
+            )
 
-            hi = float(max(
-                show["actual_fee"].max(),
-                show["predicted_fee"].max()
-            ))
+            edge_high = max(
+                predicted["actual_fee"].max(),
+                predicted["predicted_fee"].max()
+            )
 
-            fig.add_trace(
+            fig3.add_trace(
                 go.Scatter(
-                    x=[lo, hi],
-                    y=[lo, hi],
+                    x=[edge_low, edge_high],
+                    y=[edge_low, edge_high],
                     mode="lines",
-                    name="Perfect prediction",
+                    name="Prediksi sempurna",
                     line=dict(
-                        color="#F59E0B",
+                        color=COLORS["orange"],
                         dash="dash"
                     )
                 )
             )
 
             st.plotly_chart(
-                style(fig, height=550),
+                plot_style(fig3, 520),
                 use_container_width=True
             )
 
+            with st.expander(
+                "📖 Cara membaca scatter plot"
+            ):
+
+                st.write(
+                    "Tiap titik adalah satu transfer. "
+                    "Semakin dekat garis diagonal, "
+                    "semakin mendekati nilai aktual. "
+                    "Di atas garis berarti prediksi "
+                    "terlalu tinggi; di bawah berarti "
+                    "terlalu rendah. Kedua sumbu "
+                    "memakai skala logaritmik."
+                )
+
 
 # ==========================================
-# 12 - EXPLAINABLE AI (SHAP)
+# 14 - EXPLAINABLE AI
 # ==========================================
 
-with explain:
+elif page == "🧠 Explainable AI":
 
-    st.subheader(
-        "SHAP - Faktor yang Memengaruhi Prediksi"
-    )
-
-    global_chart = shap_global.sort_values(
-        "Mean_Absolute_SHAP"
+    st.title(
+        "🧠 Explainable AI — SHAP"
     )
 
     fig = px.bar(
-        global_chart,
+        shap_global.sort_values(
+            "Mean_Absolute_SHAP"
+        ),
         x="Mean_Absolute_SHAP",
         y="Feature",
         orientation="h",
-        color_discrete_sequence=[TEAL]
+        color_discrete_sequence=[
+            COLORS["teal"]
+        ],
+        labels={
+            "Mean_Absolute_SHAP":
+                "Rata-rata |SHAP| (skala log)"
+        }
     )
 
     st.plotly_chart(
-        style(fig),
+        plot_style(fig),
         use_container_width=True
     )
 
-    with st.expander(
-        "📖 Cara membaca SHAP"
-    ):
-
-        st.write(
-            "Mean absolute SHAP menunjukkan "
-            "kontribusi fitur pada skala log1p "
-            "target, bukan uang dan bukan "
-            "pengaruh sebab-akibat."
-        )
-
-    scenario = st.session_state.get(
-        "scenario"
+    st.info(
+        "SHAP menjelaskan kontribusi fitur "
+        "terhadap prediksi model, bukan "
+        "pengaruh sebab-akibat. Nilainya "
+        "berada pada skala log1p biaya."
     )
 
-    if scenario:
+    prediction = st.session_state.get(
+        "last_prediction"
+    )
 
-        st.markdown(
-            "#### SHAP untuk skenario yang dipilih"
-        )
+    if prediction:
 
-        frame = pd.DataFrame(
-            [scenario],
-            columns=FEATURES
-        )
-
-        for col in CATS:
-            frame[col] = frame[col].astype(str)
-
-        pool = Pool(
-            frame,
-            cat_features=CATS
-        )
-
-        values = model.get_feature_importance(
-            data=pool,
-            type="ShapValues"
-        )[0]
-
-        local = pd.DataFrame({
-            "Feature": FEATURES,
-            "Contribution": values[:-1]
-        })
-
-        local["Direction"] = np.where(
-            local["Contribution"] >= 0,
-            "Menaikkan prediksi log",
-            "Menurunkan prediksi log"
-        )
-
-        fig = px.bar(
-            local.sort_values("Contribution"),
-            x="Contribution",
-            y="Feature",
-            color="Direction",
-            orientation="h"
-        )
-
-        st.plotly_chart(
-            style(fig),
-            use_container_width=True
+        st.subheader(
+            "Penjelasan prediksi terakhir"
         )
 
         st.caption(
-            f"Base value (log): {values[-1]:.3f}. "
-            "Jumlah SHAP + base = "
-            "output model (log)."
+            prediction["title"]
         )
+
+        frame = pd.DataFrame(
+            [prediction["inputs"]],
+            columns=FEATURES
+        )
+
+        try:
+
+            model = load_model()
+
+            pool = Pool(
+                frame,
+                cat_features=CATS
+            )
+
+            shap_values = (
+                model.get_feature_importance(
+                    data=pool,
+                    type="ShapValues"
+                )[0]
+            )
+
+            local = pd.DataFrame({
+                "Fitur": FEATURES,
+                "Kontribusi": shap_values[:-1]
+            })
+
+            local["Arah"] = np.where(
+                local["Kontribusi"] >= 0,
+                "Menaikkan",
+                "Menurunkan"
+            )
+
+            chart = px.bar(
+                local.sort_values(
+                    "Kontribusi"
+                ),
+                x="Kontribusi",
+                y="Fitur",
+                color="Arah",
+                orientation="h",
+                color_discrete_map={
+                    "Menaikkan": COLORS["teal"],
+                    "Menurunkan": COLORS["orange"]
+                }
+            )
+
+            st.plotly_chart(
+                plot_style(chart),
+                use_container_width=True
+            )
+
+            st.caption(
+                f"Nilai dasar log: "
+                f"{shap_values[-1]:.3f}. "
+                "Total kontribusi + nilai dasar "
+                "= output log model."
+            )
+
+        except Exception as exc:
+
+            st.error(
+                "SHAP untuk skenario ini "
+                "belum dapat dihitung."
+            )
+
+            st.exception(exc)
 
     else:
 
         st.info(
-            "Jalankan simulasi di sidebar "
+            "Lakukan prediksi lewat menu "
+            "Cari Pemain atau Simulasi Transfer "
             "untuk melihat SHAP individual."
         )
 
 
 # ==========================================
-# 13 - FOOTER
+# 15 - FOOTER
 # ==========================================
 
 st.divider()
 
 st.caption(
-    "Research demo · Transfer permanen "
-    "dengan fee positif tercatat · "
-    "Bukan harga real-time · "
+    "Dataset historis | Hanya transfer "
+    "non-loan berbiaya positif tercatat | "
     "Model final tidak dilatih ulang "
-    "di aplikasi."
+    "di aplikasi | "
+    "Bukan harga pasar real-time"
 )
