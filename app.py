@@ -1533,12 +1533,26 @@ def show_prediction(expected_key=None):
 
     st.caption(pred["title"])
 
+
     st.metric(
-        "Estimasi biaya transfer "
-        "(satuan dataset)",
-        f"{pred['amount']:,.0f}"
+        "Estimasi Biaya Transfer (EUR)",
+        f"€{pred['amount']:,.0f}"
+    )
+    
+    st.caption(
+        f"≈ €{pred['amount'] / 1_000_000:,.2f} juta"
     )
 
+    
+    st.caption(
+        "Currency: EUR (Euro), mengikuti konvensi "
+        "Transfermarkt. Interpretasi ini mengasumsikan "
+        "nilai transfer_fee pada dataset asli menggunakan EUR "
+        "dan tidak dikonversi selama preprocessing. "
+        "Estimasi merupakan prediksi historis CatBoost, "
+        "bukan nilai pasar terkini atau biaya transfer aktual."
+    )
+    
     st.info(
         "Estimasi berdasarkan tahun, usia, "
         "klub asal dan klub tujuan. "
