@@ -9,7 +9,8 @@ from pathlib import Path
 import html
 import json
 import re
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
+import requests
 
 import numpy as np
 import pandas as pd
@@ -35,18 +36,48 @@ MODEL_FILE = ROOT / "model_v3.cbm"
 META_FILE = ROOT / "model_metadata_v3.json"
 DATA_FILE = ROOT / "player_scenarios_v3.csv"
 
+
+# ================================================
+# V3 STYLE - RESTORE V2 LOOK + RESPONSIVE FIX
+# ================================================
+
 st.markdown(
     """
     <style>
+    .stApp {
+        background: #0B1220;
+    }
+
+    [data-testid="stSidebar"] {
+        background: #111B2A;
+    }
+
     .block-container {
-        padding-top: 1.6rem;
-        max-width: 1300px;
+        padding-top: 4.5rem !important;
+        padding-bottom: 4rem !important;
+        max-width: 1350px;
     }
 
     .big-title {
-        font-size: 2.05rem;
+        font-size: clamp(1.5rem, 3vw, 2.15rem);
         font-weight: 750;
-        line-height: 1.2;
+        line-height: 1.4;
+        white-space: normal;
+        overflow-wrap: break-word;
+        margin-bottom: 0.8rem;
+    }
+
+    [data-testid="stMetric"] {
+        background: #132238;
+        border: 1px solid #263951;
+        border-radius: 15px;
+        padding: 16px;
+        min-height: 125px;
+    }
+
+    [data-testid="stMetricValue"] {
+        color: #2DD4BF;
+        font-size: clamp(1.2rem, 2vw, 2rem);
     }
 
     .muted-note {
@@ -54,13 +85,10 @@ st.markdown(
         opacity: 0.75;
     }
 
-    .player-face {
-        width: 144px;
-        height: 176px;
-        object-fit: cover;
-        border: 1px solid #64748b44;
-        border-radius: 16px;
-        background: #101827;
+    @media (max-width: 768px) {
+        .block-container {
+            padding-top: 5rem !important;
+        }
     }
     </style>
     """,
@@ -285,57 +313,379 @@ def club_text(value):
     return str(value)
 
 
+# ============================================================
+# V3 PHOTO SYSTEM - RESTORED FROM ORIGINAL APP.PY
+# Wikipedia 5 languages + Wikimedia Commons
+# ============================================================
+
+UA = (
+    "FootballTransferIntelligence/2.1 "
+    "(https://github.com/elissaaaf2473-sudo/"
+    "football-transfer-intelligence) requests"
+)
+
+LANGS = ["en", "de", "es", "fr", "id"]
+
+HEADERS = {
+    "User-Agent": UA,
+    "Accept": "application/json"
+}
+
+
+def api_json(url, params):
+    response = requests.get(
+        url,
+        params=params,
+        headers=HEADERS,
+        timeout=4
+    )
+    response.raise_for_status()
+    return response.json()
+
+
+def image_bytes(url):
+
+    host = urlparse(url).hostname
+
+    if host not in (
+        "upload.wikimedia.org",
+        "commons.wikimedia.org"
+    ):
+        return None
+
+    response = requests.get(
+        url,
+        headers={"User-Agent": UA},
+        timeout=6
+    )
+
+    response.raise_for_status()
+
+    if not response.headers.get(
+        "Content-Type", ""
+    ).lower().startswith("image/"):
+        return None
+
+    if len(response.content) > 6 * 1024 * 1024:
+        return None
+
+    return response.content
+
+
+def plain_text(value):
+    return " ".join(
+        html.unescape(
+            re.sub(r"<[^>]*>", " ", value)
+        ).split()
+    )
+
+
+def photo_credit(filename):
+
+    source_url = (
+        "https://commons.wikimedia.org/wiki/File:"
+        + quote(filename.replace(" ", "_"))
+    )
+
+    credit = (
+        "Wikimedia Commons · "
+        "cek lisensi pada halaman berkas"
+    )
+
+    try:
+        data = api_json(
+            "https://commons.wikimedia.org/w/api.php",
+            {
+                "action": "query",
+                "format": "json",
+                "prop": "imageinfo",
+                "iiprop": "extmetadata|url",
+                "titles": "File:" + filename
+            }
+        )
+
+        item = next(
+            iter(
+                data.get("query", {})
+                .get("pages", {})
+                .values()
+            ),
+            {}
+        )
+
+        info = (
+            item.get("imageinfo") or [{}]
+        )[0]
+
+        meta = info.get("extmetadata", {})
+
+        artist = plain_text(
+            meta.get("Artist", {}).get("value", "")
+        )
+
+        license_name = plain_text(
+            meta.get(
+                "LicenseShortName", {}
+            ).get("value", "")
+        )
+
+        credit = " · ".join(
+            value
+            for value in (
+                artist[:100],
+                license_name
+            )
+            if value
+        ) or credit
+
+        source_url = (
+            info.get("descriptionurl") or source_url
+        )
+
+    except (
+        requests.RequestException,
+        ValueError,
+        KeyError,
+        StopIteration
+    ):
+        pass
+
+    return credit, source_url
+
+
+def wiki_candidate(name, lang, search=False):
+
+    api = (
+        f"https://{lang}.wikipedia.org/w/api.php"
+    )
+
+    params = {
+        "action": "query",
+        "format": "json",
+        "formatversion": 2,
+        "prop": "pageimages|info",
+        "inprop": "url",
+        "piprop": "thumbnail|name",
+        "pithumbsize": 550,
+        "pilicense": "free",
+        "redirects": 1
+    }
+
+    if search:
+        params.update({
+            "generator": "search",
+            "gsrsearch": f'"{name}" footballer',
+            "gsrlimit": 4
+        })
+    else:
+        params["titles"] = name
+
+    data = api_json(api, params)
+
+    pages = (
+        data.get("query", {}).get("pages", [])
+    )
+
+    surname = name.strip().split()[-1].casefold()
+
+    for page in pages:
+
+        title = (
+            page.get("title", "").casefold()
+        )
+
+        if (
+            page.get("missing")
+            or not title
+            or surname not in title
+        ):
+            continue
+
+        if any(
+            word in title
+            for word in (
+                "list of ",
+                "category:",
+                "daftar "
+            )
+        ):
+            continue
+
+        thumbnail = (
+            page.get("thumbnail", {}).get("source")
+        )
+
+        if thumbnail and page.get("pageimage"):
+            return (
+                thumbnail,
+                page["pageimage"],
+                page.get("fullurl", "")
+            )
+
+    return None
+
+
+@st.cache_data(
+    ttl=7 * 24 * 3600,
+    max_entries=250,
+    show_spinner=False
+)
+def get_player_photo(player_id, player_name):
+
+    # Prioritas: Wikipedia dalam 5 bahasa
+    for lang in LANGS:
+
+        try:
+            result = wiki_candidate(
+                player_name,
+                lang
+            )
+
+            if not result and lang == "en":
+                result = wiki_candidate(
+                    player_name,
+                    lang,
+                    search=True
+                )
+
+            if not result:
+                continue
+
+            thumbnail, filename, _ = result
+
+            picture = image_bytes(thumbnail)
+
+            if not picture:
+                continue
+
+            credit, source = photo_credit(
+                filename
+            )
+
+            return {
+                "bytes": picture,
+                "credit": credit,
+                "source": source,
+                "caption": (
+                    "Foto pemain; mungkin berasal "
+                    "dari musim berbeda"
+                )
+            }
+
+        except (
+            requests.RequestException,
+            ValueError,
+            KeyError,
+            TypeError
+        ):
+            continue
+
+    # Fallback Haaland dari aplikasi V2
+    if (
+        player_name.strip().casefold()
+        == "erling haaland"
+    ):
+
+        filename = (
+            "Erling Haaland June 2025.jpg"
+        )
+
+        image_url = (
+            "https://commons.wikimedia.org/"
+            "wiki/Special:FilePath/"
+            + quote(filename)
+            + "?width=500"
+        )
+
+        try:
+            picture = image_bytes(image_url)
+
+            if picture:
+                return {
+                    "bytes": picture,
+                    "credit": (
+                        "MichaelEmilio · CC BY 4.0 · "
+                        "Wikimedia Commons"
+                    ),
+                    "source": (
+                        "https://commons.wikimedia.org/"
+                        "wiki/File:Erling_Haaland_June_2025.jpg"
+                    ),
+                    "caption": (
+                        "Foto tahun 2025; bukan "
+                        "foto pada musim transfer 2022"
+                    )
+                }
+
+        except requests.RequestException:
+            pass
+
+    return None
+
+
 def show_face(player_id, name):
 
-    # Foto dari host eksternal.
-    # Jika gagal, gunakan ilustrasi cadangan.
+    with st.spinner(
+        "Mencari foto pemain..."
+    ):
+        photo = get_player_photo(
+            str(player_id),
+            str(name)
+        )
 
-    number = re.sub(
-        r"\D",
-        "",
-        str(player_id)
-    )
+    if photo:
 
-    placeholder = (
-        '<svg xmlns="http://www.w3.org/2000/svg" '
-        'width="144" height="176" '
-        'viewBox="0 0 144 176">'
-        '<rect width="144" height="176" rx="16" '
-        'fill="#18243a"/>'
-        '<circle cx="72" cy="59" r="27" '
-        'fill="#8b9db4"/>'
-        '<path d="M24 164q4-58 48-58t48 58" '
-        'fill="#8b9db4"/>'
-        '</svg>'
-    )
+        st.image(
+            photo["bytes"],
+            width=205
+        )
 
-    fallback = (
-        "data:image/svg+xml;charset=utf-8,"
-        + quote(placeholder)
-    )
+        st.caption(
+            photo["caption"]
+        )
 
-    image_url = (
-        "https://img.a.transfermarkt.technology/"
-        f"portrait/medium/{number}.jpg?lm=1"
-        if number
-        else fallback
-    )
+        st.caption(
+            "Kredit: " + photo["credit"]
+        )
 
-    st.markdown(
-        '<img class="player-face" src="'
-        + html.escape(image_url, quote=True)
-        + '" alt="Foto '
-        + html.escape(name, quote=True)
-        + '" onerror="this.onerror=null;this.src=\''
-        + fallback
-        + '\';">',
-        unsafe_allow_html=True
-    )
+        st.markdown(
+            f"[📷 Sumber foto & lisensi]"
+            f"({photo['source']})"
+        )
 
-    st.caption(
-        "Foto eksternal; jika tidak tersedia "
-        "akan ditampilkan ilustrasi."
-    )
+    elif (
+        str(name).strip().casefold()
+        == "erling haaland"
+    ):
+
+        url = (
+            "https://commons.wikimedia.org/wiki/"
+            "Special:FilePath/"
+            "Erling_Haaland_June_2025.jpg"
+            "?width=500"
+        )
+
+        st.markdown(
+            '<img src="'
+            + html.escape(url, quote=True)
+            + '" alt="Erling Haaland" '
+            'style="width:100%;max-width:205px;'
+            'height:auto;border-radius:14px;">',
+            unsafe_allow_html=True
+        )
+
+        st.caption(
+            "Foto 2025 · Wikimedia Commons"
+        )
+
+    else:
+
+        st.markdown("### 👤")
+
+        st.caption(
+            "Foto dengan sumber dan lisensi "
+            "yang sesuai belum ditemukan."
+        )
 
 
 # ============================================================
