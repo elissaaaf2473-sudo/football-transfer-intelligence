@@ -139,15 +139,20 @@ def gap_table(frame, money, include_player=False):
 
 
 def render_photo(row):
-    file = ASSETS / "portraits" / f"{row.player_id}.webp"
-    info = read_json(ASSETS / "portraits" / "credits.json").get(row.player_id)
-    if file.is_file() and info:
-        st.image(str(file), width=135)
-        st.caption(f"[{info['credit']}]({info['source']}) · [{info['license']}]({info['licenseUrl']}) · diperkecil")
-    else:
-        initials = "".join(word[0] for word in row.player_name.split()[:2])
-        st.html(f'<span class="v3-player-initials" aria-hidden="true">{escape(initials)}</span>')
-        st.caption("Foto belum tersedia.")
+    for portraits in (ASSETS / "portraits", ROOT):
+        photo = portraits / f"{row.player_id}.webp"
+        credits = portraits / "credits.json"
+        if not photo.is_file() or not credits.is_file():
+            continue
+        info = read_json(credits).get(row.player_id)
+        if info:
+            st.image(str(photo), width=135)
+            st.caption(f"[{info['credit']}]({info['source']}) · [{info['license']}]({info['licenseUrl']}) · diperkecil")
+            return
+
+    initials = "".join(word[0] for word in row.player_name.split()[:2])
+    st.html(f'<span class="v3-player-initials" aria-hidden="true">{escape(initials)}</span>')
+    st.caption("Foto belum tersedia.")
 
 
 def render_comparison(row, money, currency, fx):
