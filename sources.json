@@ -1,0 +1,9 @@
+{
+  "fees": "https://github.com/dcaribou/transfermarkt-datasets",
+  "fx": {
+    "date": "2026-11-09",
+    "EUR": 1,
+    "USD": 1.1193,
+    "IDR": 20234.31
+  }
+}
