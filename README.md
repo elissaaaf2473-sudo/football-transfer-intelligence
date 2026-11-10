@@ -1,86 +1,56 @@
+# Transfer Fee Lab V3 · Streamlit
 
-# Football Transfer Intelligence
+Aplikasi Streamlit ini memakai file model CatBoost V3 yang sudah dilatih
+di Colab. Prediksi katalog dihitung dari model saat aplikasi dibuka dan
+disimpan di cache. Simulasi klub tujuan menghitung ulang prediksi dengan
+mengubah ID klub tujuan pada skenario yang dipilih.
 
-An explainable machine learning project for
-predicting recorded football transfer fees.
+## Jalankan dari ZIP
 
-## Live Dashboard
+Ekstrak ZIP. Buka terminal dari folder yang berisi `requirements.txt`.
 
-https://elissaaaf2473-sudo.github.io/football-transfer-intelligence/
+```sh
+python -m pip install -r requirements.txt
+python -m streamlit run pages/2_Transfer_Fee_Lab.py
+```
 
-## Dataset
+Di Windows, pakai `py` sebagai pengganti `python` jika diperlukan.
 
-Soccer Player Transfer Dataset (Kaggle)
+## Tambahkan ke aplikasi Streamlit lama
 
-Source:
-https://www.kaggle.com/datasets/otaviofbrito/soccer-player-transfer-dataset
+Salin dua item berikut ke repo Football Transfer Intelligence yang sudah
+memuat model, metadata, katalog pemain, katalog klub, dan dependensi V3.
 
-Research sample:
-29,272 recorded positive-fee, non-loan
-transactions from 2010 to 2023.
+- `pages/2_Transfer_Fee_Lab.py` ke folder `pages/`.
+- Folder `transfer_fee_lab_assets/` ke root repo.
 
-## Methodology
+Gunakan `app.py` sebagai entrypoint aplikasi multipage yang lama. Halaman
+**Transfer Fee Lab** akan muncul di sidebar. Untuk memasang versi ini sebagai
+aplikasi terpisah, gunakan isi ZIP sebagai repo dan tetapkan
+`pages/2_Transfer_Fee_Lab.py` sebagai main file.
 
-- Temporal train-validation-test splitting
-- Ridge Regression
-- Random Forest Regressor
-- CatBoost Regressor
-- Expanding-window validation
-- Hyperparameter tuning
-- Ablation study
-- SHAP explainability
-- Player-cluster bootstrap analysis
+File `.streamlit/config.toml` menyesuaikan tema dasar widget dan tabel. Jika
+memakai repo lama dengan pengaturan tema sendiri, tambahkan bagian `[theme]`
+hanya jika ingin memakai palet yang sama pada seluruh aplikasi Streamlit.
 
-## Final Model
+Untuk akses terbatas di Streamlit Community Cloud, gunakan repo GitHub private
+dan cek **Settings → Sharing**. Jika menambahkan halaman ke aplikasi yang
+sudah terhubung ke GitHub, cek akses aplikasi itu sebelum mendorong perubahan.
+Lihat [panduan akses Streamlit](https://docs.streamlit.io/deploy/streamlit-community-cloud/share-your-app).
 
-Algorithm: CatBoost Regressor
+## Data
 
-- Depth: 8
-- Iterations: 1000
-- Learning rate: 0.04
-- L2 regularization: 8
-- Target transformation: log1p
-- Training: 2010-2021
-- Testing: 2022-2023
-
-## Final Holdout Test
-
-| Metric | CatBoost |
-|---|---:|
-| MAE | 2,307,871.22 |
-| RMSE | 6,944,274.56 |
-| R-squared | 0.3625 |
-| MAE improvement vs median baseline | 28.72% |
-
-## Key Findings
-
-Club identities provide substantial
-predictive information.
-
-CatBoost outperforms Ridge Regression,
-Random Forest, and the median baseline
-on the final holdout test.
-
-However, the model tends to underestimate
-extremely high transfer fees.
-
-## Limitations
-
-- Only recorded positive-fee non-loan
-  transactions are modeled.
-- Zero-fee and undisclosed-fee transfers
-  cannot automatically be treated equally.
-- Historical features are limited.
-- The model is not a causal model.
-- Extreme-value prediction remains challenging.
-- Early exploratory analysis included the
-  holdout years, although final model tuning
-  did not use holdout outcomes.
-
-## Deployment
-
-Interactive research dashboard deployed
-using GitHub Pages.
-
-The website visualizes saved model results.
-It does not execute live Python predictions.
+- Model, metadata, dan katalog V3 berasal dari
+  [repo Football Transfer Intelligence](https://github.com/elissaaaf2473-sudo/football-transfer-intelligence)
+  pada commit `39c2304676442b00a54bad01f4cd86baff6423a4`.
+- Biaya transfer tercatat berasal dari
+  [Transfermarkt Datasets](https://github.com/dcaribou/transfermarkt-datasets)
+  snapshot 6 Juli 2026. Pencocokan memakai ID pemain, tanggal, ID klub asal,
+  dan ID klub tujuan. Berkas yang disertakan hanya memuat 15.824 biaya yang
+  cocok dengan katalog V3.
+- USD dan IDR memakai kurs referensi ECB 9 November 2026 untuk tampilan.
+- Kredit dan lisensi lima foto Wikimedia Commons ada di
+  `transfer_fee_lab_assets/portraits/credits.json`.
+- `transfer_fee_lab_assets/stadium.webp` adalah versi yang dipotong dan
+  diperkecil dari [Inside the Emirates Stadium – Panorama](https://commons.wikimedia.org/wiki/File:Inside_the_Emirates_Stadium_-_Panorama.jpg)
+  oleh Lloyd Morgan, dengan lisensi [CC BY-SA 2.0](https://creativecommons.org/licenses/by-sa/2.0/).
